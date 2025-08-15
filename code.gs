@@ -383,6 +383,83 @@ function extractPgnHeaders(pgn) {
 }
 
 /**
+ * Parse PGN into structured components used by the sheet
+ */
+function parsePgnComponents(pgn) {
+  const result = {
+    event: '',
+    site: '',
+    date: '',
+    round: '',
+    white: '',
+    black: '',
+    result: '',
+    whiteElo: '',
+    blackElo: '',
+    timeControl: '',
+    termination: '',
+    startTime: '',
+    endTime: '',
+    link: '',
+    currentPosition: '',
+    timezone: '',
+    ecoCode: '',
+    opening: '',
+    variation: '',
+    moves: ''
+  };
+
+  if (!pgn || typeof pgn !== 'string') {
+    return result;
+  }
+
+  // Collect headers
+  const headerRegex = /\[([^\s]+)\s+"([^"]*)"\]/g;
+  let match;
+  const headers = {};
+  while ((match = headerRegex.exec(pgn)) !== null) {
+    const key = match[1].toLowerCase();
+    headers[key] = match[2];
+  }
+
+  result.event = headers['event'] || '';
+  result.site = headers['site'] || '';
+  result.date = headers['date'] || '';
+  result.round = headers['round'] || '';
+  result.white = headers['white'] || '';
+  result.black = headers['black'] || '';
+  result.result = headers['result'] || '';
+  result.whiteElo = headers['whiteelo'] || '';
+  result.blackElo = headers['blackelo'] || '';
+  result.timeControl = headers['timecontrol'] || '';
+  result.termination = headers['termination'] || '';
+  result.startTime = headers['starttime'] || headers['utctime'] || '';
+  result.endTime = headers['endtime'] || '';
+  result.link = headers['link'] || '';
+  result.currentPosition = headers['currentposition'] || '';
+  result.timezone = headers['timezone'] || '';
+  result.ecoCode = headers['eco'] || '';
+  result.opening = headers['opening'] || '';
+  result.variation = headers['variation'] || '';
+
+  // Extract moves section (text after the blank line following headers)
+  const blankLineIndex = pgn.indexOf('\n\n');
+  if (blankLineIndex !== -1) {
+    let movesText = pgn.slice(blankLineIndex + 2).trim();
+    // Remove PGN comments {...} and NAGs $n
+    movesText = movesText.replace(/\{[^}]*\}/g, '').replace(/\$\d+/g, '');
+    // Normalize whitespace
+    movesText = movesText.replace(/\s+/g, ' ').trim();
+    if (movesText.length > 300) {
+      movesText = movesText.slice(0, 297) + '...';
+    }
+    result.moves = movesText;
+  }
+
+  return result;
+}
+
+/**
  * Determine game type based on various factors
  */
 function determineGameType(game) {
@@ -589,7 +666,7 @@ function formatSheet(sheet, dataRows) {
   sheet.autoResizeColumns(1, sheet.getLastColumn());
   
   // Format datetime columns
-  const dateTimeColumns = [3, 4, 47, 50]; // Start Time, End Time, Move By, Last Activity
+  const dateTimeColumns = [3, 4, 45, 48]; // Start Time, End Time, Move By, Last Activity
   dateTimeColumns.forEach(col => {
     if (col <= sheet.getLastColumn()) {
       const dateRange = sheet.getRange(2, col, dataRows, 1);
@@ -613,8 +690,8 @@ function formatSheet(sheet, dataRows) {
   
   // Set specific column widths for better readability
   sheet.setColumnWidth(1, 200); // Game URL
-  sheet.setColumnWidth(52, 400); // Full PGN
-  sheet.setColumnWidth(53, 300); // Raw Game Data
+  sheet.setColumnWidth(70, 400); // Full PGN
+  sheet.setColumnWidth(71, 300); // Raw Game Data
 }
 
 /**
