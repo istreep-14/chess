@@ -226,6 +226,7 @@ function processCompleteGameData(game) {
     pgnOpening: pgnComponents.opening,
     pgnVariation: pgnComponents.variation,
     movesSummary: pgnComponents.moves,
+    moveClocksSummary: pgnComponents.moveClocks,
     
     // PGN Data
     fullPgn: game.pgn || '',
@@ -406,7 +407,8 @@ function parsePgnComponents(pgn) {
     ecoCode: '',
     opening: '',
     variation: '',
-    moves: ''
+    moves: '',
+    moveClocks: ''
   };
 
   if (!pgn || typeof pgn !== 'string') {
@@ -442,18 +444,64 @@ function parsePgnComponents(pgn) {
   result.opening = headers['opening'] || '';
   result.variation = headers['variation'] || '';
 
-  // Extract moves section (text after the blank line following headers)
+  // Extract moves section and build keyed maps for moves and clocks
   const blankLineIndex = pgn.indexOf('\n\n');
   if (blankLineIndex !== -1) {
     let movesText = pgn.slice(blankLineIndex + 2).trim();
-    // Remove PGN comments {...} and NAGs $n
-    movesText = movesText.replace(/\{[^}]*\}/g, '').replace(/\$\d+/g, '');
-    // Normalize whitespace
-    movesText = movesText.replace(/\s+/g, ' ').trim();
-    if (movesText.length > 300) {
-      movesText = movesText.slice(0, 297) + '...';
+
+    // Remove result token at the end if present
+    movesText = movesText.replace(/\s+(1-0|0-1|1\/2-1\/2)\s*$/, '');
+
+    // Remove RAVs/variations in parentheses
+    movesText = movesText.replace(/\([^)]*\)/g, '');
+
+    // Keep comments for clock extraction. Remove NAGs $n
+    movesText = movesText.replace(/\$\d+/g, '');
+
+    const movesMap = {};
+    const clocksMap = {};
+
+    // Match full move pairs like: 12. e4 {[%clk 0:03:00]} e5 {[%clk 0:02:59]}
+    const pairRegex = /(\d+)\.\s*(?!\.\.\.)([^\s{}]+)(?:\s*\{([^}]*)\})?(?:\s+([^\s{}]+)(?:\s*\{([^}]*)\})?)?/g;
+    let m;
+    while ((m = pairRegex.exec(movesText)) !== null) {
+      const moveNo = m[1];
+      const whiteSan = m[2];
+      const whiteComment = m[3] || '';
+      const blackSan = m[4];
+      const blackComment = m[5] || '';
+
+      const wKey = `${moveNo}w`;
+      if (whiteSan && whiteSan !== '...') {
+        movesMap[wKey] = whiteSan;
+        const wClkMatch = whiteComment.match(/\[%clk\s+([0-9:]+)\]/);
+        if (wClkMatch) clocksMap[wKey] = wClkMatch[1];
+      }
+
+      if (blackSan && blackSan !== '...') {
+        const bKey = `${moveNo}b`;
+        movesMap[bKey] = blackSan;
+        const bClkMatch = blackComment.match(/\[%clk\s+([0-9:]+)\]/);
+        if (bClkMatch) clocksMap[bKey] = bClkMatch[1];
+      }
     }
-    result.moves = movesText;
+
+    // Handle rare cases like: 23... c5 {[%clk 0:00:42]}
+    const blackOnlyRegex = /(\d+)\.\s*\.\.\.\s*([^\s{}]+)(?:\s*\{([^}]*)\})?/g;
+    while ((m = blackOnlyRegex.exec(movesText)) !== null) {
+      const moveNo = m[1];
+      const blackSan = m[2];
+      const blackComment = m[3] || '';
+      const bKey = `${moveNo}b`;
+      if (!movesMap[bKey]) {
+        movesMap[bKey] = blackSan;
+        const bClkMatch = blackComment.match(/\[%clk\s+([0-9:]+)\]/);
+        if (bClkMatch) clocksMap[bKey] = bClkMatch[1];
+      }
+    }
+
+    result.moves = JSON.stringify(movesMap);
+    result.moveClocks = JSON.stringify(clocksMap);
   }
 
   return result;
@@ -476,14 +524,13 @@ function determineGameType(game) {
 function extractBaseTime(timeControl) {
   if (!timeControl) return '';
   
-  const match = timeControl.match(/^(\d+)/);
-  if (match) {
-    const seconds = parseInt(match[1]);
-    if (seconds < 60) return `${seconds}s`;
-    if (seconds < 3600) return `${Math.floor(seconds/60)}m`;
-    return `${Math.floor(seconds/3600)}h`;
-  }
-  return timeControl;
+  // Daily format like "1/86400" -> not applicable
+  if (timeControl.includes('/')) return '';
+
+  const basePart = timeControl.split('+')[0];
+  const seconds = parseInt(basePart, 10);
+  if (isNaN(seconds)) return '';
+  return seconds / 60; // minutes as a numeric value
 }
 
 /**
@@ -492,8 +539,13 @@ function extractBaseTime(timeControl) {
 function extractIncrement(timeControl) {
   if (!timeControl) return '';
   
-  const match = timeControl.match(/\+(\d+)$/);
-  return match ? `+${match[1]}s` : '';
+  // Daily format like "1/86400" -> not applicable
+  if (timeControl.includes('/')) return '';
+
+  const parts = timeControl.split('+');
+  if (parts.length < 2) return 0;
+  const inc = parseInt(parts[1], 10);
+  return isNaN(inc) ? 0 : inc; // seconds as a numeric value
 }
 
 /**
@@ -578,7 +630,7 @@ function setupHeaders(sheet) {
     'PGN Event', 'PGN Site', 'PGN Date', 'PGN Round', 'PGN White', 'PGN Black', 'PGN Result',
     'PGN White Elo', 'PGN Black Elo', 'PGN Time Control', 'PGN Termination', 'PGN Start Time',
     'PGN End Time', 'PGN Link', 'PGN Current Position', 'PGN Timezone', 'PGN ECO Code',
-    'PGN Opening', 'PGN Variation', 'Moves Summary',
+    'PGN Opening', 'PGN Variation', 'Moves Summary', 'Move Clocks Summary',
     
     // Complete Game Data
     'PGN Other Headers', 'Full PGN', 'Raw Game Data'
@@ -586,15 +638,7 @@ function setupHeaders(sheet) {
   
   sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
   
-  // Format headers
-  const headerRange = sheet.getRange(1, 1, 1, headers.length);
-  headerRange.setFontWeight('bold');
-  headerRange.setBackground('#4285f4');
-  headerRange.setFontColor('white');
-  headerRange.setWrap(true);
-  
-  // Freeze header row
-  sheet.setFrozenRows(1);
+  // Remove all formatting features (no-op)
 }
 
 /**
@@ -644,7 +688,7 @@ function writeGamesToSheet(sheet, gamesData) {
     game.pgnBlack, game.pgnResult, game.pgnWhiteElo, game.pgnBlackElo, 
     game.pgnTimeControl, game.pgnTermination, game.pgnStartTime, game.pgnEndTime, 
     game.pgnLink, game.pgnCurrentPosition, game.pgnTimezone, game.pgnEcoCode, 
-    game.pgnOpening, game.pgnVariation, game.movesSummary,
+    game.pgnOpening, game.pgnVariation, game.movesSummary, game.moveClocksSummary,
     
     // Complete Game Data
     game.pgnHeaders, game.fullPgn, game.rawGameData
@@ -654,44 +698,14 @@ function writeGamesToSheet(sheet, gamesData) {
   const range = sheet.getRange(2, 1, rows.length, rows[0].length);
   range.setValues(rows);
   
-  // Format the data
-  formatSheet(sheet, rows.length);
+  // No formatting
 }
 
 /**
  * Apply comprehensive formatting to the sheet
  */
 function formatSheet(sheet, dataRows) {
-  // Auto-resize columns
-  sheet.autoResizeColumns(1, sheet.getLastColumn());
-  
-  // Format datetime columns
-  const dateTimeColumns = [3, 4, 45, 48]; // Start Time, End Time, Move By, Last Activity
-  dateTimeColumns.forEach(col => {
-    if (col <= sheet.getLastColumn()) {
-      const dateRange = sheet.getRange(2, col, dataRows, 1);
-      dateRange.setNumberFormat('MM/dd/yyyy hh:mm:ss');
-    }
-  });
-  
-  // Add borders
-  const dataRange = sheet.getRange(1, 1, dataRows + 1, sheet.getLastColumn());
-  dataRange.setBorder(true, true, true, true, true, true);
-  
-  // Alternate row colors for better readability
-  for (let i = 2; i <= dataRows + 1; i++) {
-    if (i % 2 === 0) {
-      sheet.getRange(i, 1, 1, sheet.getLastColumn()).setBackground('#f8f9fa');
-    }
-  }
-  
-  // Freeze first few columns for easier navigation
-  sheet.setFrozenColumns(5);
-  
-  // Set specific column widths for better readability
-  sheet.setColumnWidth(1, 200); // Game URL
-  sheet.setColumnWidth(70, 400); // Full PGN
-  sheet.setColumnWidth(71, 300); // Raw Game Data
+  // Intentionally left blank: no formatting (row colors, sizes, borders, resizing, or number formats)
 }
 
 /**
