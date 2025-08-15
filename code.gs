@@ -1,3 +1,4 @@
+
 /**
  * Chess.com Complete Game Data Fetcher using Public API
  * Collects ALL possible game data fields with Me/Opponent formatting
@@ -551,7 +552,7 @@ function extractBaseTime(timeControl) {
   
   // Daily format like "1/86400" -> not applicable
   if (timeControl.includes('/')) return '';
-
+ 
   const basePart = timeControl.split('+')[0];
   const seconds = parseInt(basePart, 10);
   if (isNaN(seconds)) return '';
@@ -566,7 +567,7 @@ function extractIncrement(timeControl) {
   
   // Daily format like "1/86400" -> not applicable
   if (timeControl.includes('/')) return '';
-
+ 
   const parts = timeControl.split('+');
   if (parts.length < 2) return 0;
   const inc = parseInt(parts[1], 10);
