@@ -1,5 +1,5 @@
 {
-  "message": "Bad credentials",
-  "documentation_url": "https://docs.github.com/rest",
-  "status": "401"
+  "message": "Resource not accessible by integration",
+  "documentation_url": "https://docs.github.com/rest/pulls/pulls#create-a-pull-request",
+  "status": "403"
 }
