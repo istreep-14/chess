@@ -16,6 +16,7 @@
 const CHESS_COM_USERNAME = 'ians141'; // Replace with your Chess.com username
 const SHEET_ID = '1OAQz_2Ev2lYMoiNiDQnXhicOKHtSu7xqZK2PEudqN2I'; // Replace with your Google Sheet ID
 const SHEET_NAME = 'Sheet1'; // Name of the sheet tab
+const MOVES_SHEET_NAME = 'Moves'; // Name of the moves detail sheet
 
 /**
  * Main function to fetch all Chess.com games with complete data
@@ -58,6 +59,7 @@ function fetchAllChessComGames() {
     // Write all games data to sheet
     if (allGamesData.length > 0) {
       writeGamesToSheet(sheet, allGamesData);
+      writeMovesToSheet(allGamesData);
     }
     
     console.log(`Successfully fetched ${totalGames} games with complete data!`);
@@ -149,6 +151,7 @@ function processCompleteGameData(game) {
     endTime: game.end_time ? new Date(game.end_time * 1000) : '',
     timeControl: game.time_control || '',
     timeClass: game.time_class || '',
+    format: determineFormat(game),
     rules: game.rules || 'chess',
     rated: game.rated !== undefined ? (game.rated ? 'Yes' : 'No') : 'N/A',
     
@@ -226,7 +229,6 @@ function processCompleteGameData(game) {
     pgnOpening: pgnComponents.opening,
     pgnVariation: pgnComponents.variation,
     movesSummary: pgnComponents.moves,
-    moveClocksSummary: pgnComponents.moveClocks,
     
     // PGN Data
     fullPgn: game.pgn || '',
@@ -407,8 +409,7 @@ function parsePgnComponents(pgn) {
     ecoCode: '',
     opening: '',
     variation: '',
-    moves: '',
-    moveClocks: ''
+    moves: ''
   };
 
   if (!pgn || typeof pgn !== 'string') {
@@ -444,13 +445,13 @@ function parsePgnComponents(pgn) {
   result.opening = headers['opening'] || '';
   result.variation = headers['variation'] || '';
 
-  // Extract moves section and build keyed maps for moves and clocks
+  // Extract moves section and build keyed map for moves with clocks
   const blankLineIndex = pgn.indexOf('\n\n');
   if (blankLineIndex !== -1) {
     let movesText = pgn.slice(blankLineIndex + 2).trim();
 
     // Remove result token at the end if present
-    movesText = movesText.replace(/\s+(1-0|0-1|1\/2-1\/2)\s*$/, '');
+    movesText = movesText.replace(/\s+(1-0|0-1|1\/2-1\/2|\*)\s*$/, '');
 
     // Remove RAVs/variations in parentheses
     movesText = movesText.replace(/\([^)]*\)/g, '');
@@ -459,9 +460,8 @@ function parsePgnComponents(pgn) {
     movesText = movesText.replace(/\$\d+/g, '');
 
     const movesMap = {};
-    const clocksMap = {};
 
-    // Match full move pairs like: 12. e4 {[%clk 0:03:00]} e5 {[%clk 0:02:59]}
+    // Match full move pairs like: 12. e4 {[%clk 0:03:00]} e5 {[%clk 0:02:59.9]}
     const pairRegex = /(\d+)\.\s*(?!\.\.\.)([^\s{}]+)(?:\s*\{([^}]*)\})?(?:\s+([^\s{}]+)(?:\s*\{([^}]*)\})?)?/g;
     let m;
     while ((m = pairRegex.exec(movesText)) !== null) {
@@ -472,36 +472,32 @@ function parsePgnComponents(pgn) {
       const blackComment = m[5] || '';
 
       const wKey = `${moveNo}w`;
-      if (whiteSan && whiteSan !== '...') {
-        movesMap[wKey] = whiteSan;
-        const wClkMatch = whiteComment.match(/\[%clk\s+([0-9:]+)\]/);
-        if (wClkMatch) clocksMap[wKey] = wClkMatch[1];
+      if (whiteSan && whiteSan !== '...' && whiteSan !== '.') {
+        const wClkMatch = whiteComment.match(/\[%clk\s+([0-9:\.]+)\]/);
+        movesMap[wKey] = [whiteSan, wClkMatch ? wClkMatch[1] : ''];
       }
 
-      if (blackSan && blackSan !== '...') {
+      if (blackSan && blackSan !== '...' && blackSan !== '.') {
         const bKey = `${moveNo}b`;
-        movesMap[bKey] = blackSan;
-        const bClkMatch = blackComment.match(/\[%clk\s+([0-9:]+)\]/);
-        if (bClkMatch) clocksMap[bKey] = bClkMatch[1];
+        const bClkMatch = (blackComment || '').match(/\[%clk\s+([0-9:\.]+)\]/);
+        movesMap[bKey] = [blackSan, bClkMatch ? bClkMatch[1] : ''];
       }
     }
 
-    // Handle rare cases like: 23... c5 {[%clk 0:00:42]}
+    // Handle black-only notation like: 23... c5 {[%clk 0:00:42]}
     const blackOnlyRegex = /(\d+)\.\s*\.\.\.\s*([^\s{}]+)(?:\s*\{([^}]*)\})?/g;
     while ((m = blackOnlyRegex.exec(movesText)) !== null) {
       const moveNo = m[1];
       const blackSan = m[2];
       const blackComment = m[3] || '';
       const bKey = `${moveNo}b`;
-      if (!movesMap[bKey]) {
-        movesMap[bKey] = blackSan;
-        const bClkMatch = blackComment.match(/\[%clk\s+([0-9:]+)\]/);
-        if (bClkMatch) clocksMap[bKey] = bClkMatch[1];
+      if (!movesMap[bKey] && blackSan !== '.' && blackSan !== '...') {
+        const bClkMatch = blackComment.match(/\[%clk\s+([0-9:\.]+)\]/);
+        movesMap[bKey] = [blackSan, bClkMatch ? bClkMatch[1] : ''];
       }
     }
 
     result.moves = JSON.stringify(movesMap);
-    result.moveClocks = JSON.stringify(clocksMap);
   }
 
   return result;
@@ -516,6 +512,33 @@ function determineGameType(game) {
   if (game.rules !== 'chess') return `Variant (${game.rules})`;
   if (game.time_class === 'daily') return 'Daily';
   return 'Casual';
+}
+
+/**
+ * Determine rating format bucket per user rules
+ */
+function determineFormat(game) {
+  const rules = (game.rules || 'chess').toLowerCase();
+  const timeClass = (game.time_class || '').toLowerCase();
+
+  // Standard chess: mapped to time class or Daily
+  if (rules === 'chess') {
+    if (timeClass === 'daily') return 'Daily';
+    if (timeClass === 'bullet') return 'Bullet';
+    if (timeClass === 'blitz') return 'Blitz';
+    if (timeClass === 'rapid') return 'Rapid';
+    return timeClass ? timeClass.charAt(0).toUpperCase() + timeClass.slice(1) : '';
+  }
+
+  // Chess960 special cases
+  if (rules === 'chess960') {
+    return timeClass === 'daily' ? 'Daily 960' : 'Live 960';
+  }
+
+  // Other variants: format is just the variant name (title-cased)
+  return rules
+    .replace(/[-_]+/g, ' ')
+    .replace(/\b\w/g, c => c.toUpperCase());
 }
 
 /**
@@ -596,7 +619,7 @@ function getOrCreateSheet() {
 function setupHeaders(sheet) {
   const headers = [
     // Basic Game Information
-    'Game URL', 'Game ID', 'Start Time', 'End Time', 'Time Control', 'Time Class', 
+    'Game URL', 'Game ID', 'Start Time', 'End Time', 'Time Control', 'Time Class', 'Format', 
     'Rules', 'Rated', 'Game Type', 'Is Live Game', 'Is Daily Game', 'Is Variant',
     
     // Results
@@ -630,7 +653,7 @@ function setupHeaders(sheet) {
     'PGN Event', 'PGN Site', 'PGN Date', 'PGN Round', 'PGN White', 'PGN Black', 'PGN Result',
     'PGN White Elo', 'PGN Black Elo', 'PGN Time Control', 'PGN Termination', 'PGN Start Time',
     'PGN End Time', 'PGN Link', 'PGN Current Position', 'PGN Timezone', 'PGN ECO Code',
-    'PGN Opening', 'PGN Variation', 'Moves Summary', 'Move Clocks Summary',
+    'PGN Opening', 'PGN Variation', 'Moves Summary',
     
     // Complete Game Data
     'PGN Other Headers', 'Full PGN', 'Raw Game Data'
@@ -651,7 +674,7 @@ function writeGamesToSheet(sheet, gamesData) {
   const rows = gamesData.map(game => [
     // Basic Game Information
     game.gameUrl, game.gameId, game.startTime, game.endTime, game.timeControl, 
-    game.timeClass, game.rules, game.rated, game.gameType, game.isLiveGame, 
+    game.timeClass, game.format, game.rules, game.rated, game.gameType, game.isLiveGame, 
     game.isDailyGame, game.isVariant,
     
     // Results
@@ -688,7 +711,7 @@ function writeGamesToSheet(sheet, gamesData) {
     game.pgnBlack, game.pgnResult, game.pgnWhiteElo, game.pgnBlackElo, 
     game.pgnTimeControl, game.pgnTermination, game.pgnStartTime, game.pgnEndTime, 
     game.pgnLink, game.pgnCurrentPosition, game.pgnTimezone, game.pgnEcoCode, 
-    game.pgnOpening, game.pgnVariation, game.movesSummary, game.moveClocksSummary,
+    game.pgnOpening, game.pgnVariation, game.movesSummary,
     
     // Complete Game Data
     game.pgnHeaders, game.fullPgn, game.rawGameData
@@ -699,6 +722,61 @@ function writeGamesToSheet(sheet, gamesData) {
   range.setValues(rows);
   
   // No formatting
+}
+
+/**
+ * Write expanded moves (SAN + clock) to a dedicated sheet as rows
+ */
+function writeMovesToSheet(gamesData) {
+  const spreadsheet = SpreadsheetApp.openById(SHEET_ID);
+  let movesSheet = spreadsheet.getSheetByName(MOVES_SHEET_NAME);
+  if (!movesSheet) {
+    movesSheet = spreadsheet.insertSheet(MOVES_SHEET_NAME);
+  } else {
+    movesSheet.clear();
+  }
+
+  const headers = ['Game ID', 'Move No', 'Side', 'Key', 'SAN', 'Clock'];
+  movesSheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+
+  const rows = [];
+  for (let i = 0; i < gamesData.length; i++) {
+    const game = gamesData[i];
+    const gameId = game.gameId || '';
+    let movesObj = {};
+    try {
+      movesObj = game.movesSummary ? JSON.parse(game.movesSummary) : {};
+    } catch (e) {
+      movesObj = {};
+    }
+
+    const keys = Object.keys(movesObj);
+    if (keys.length === 0) continue;
+
+    // Sort keys by move number then side (w before b)
+    keys.sort((a, b) => {
+      const na = parseInt(a, 10);
+      const nb = parseInt(b, 10);
+      if (na !== nb) return na - nb;
+      const sa = a.endsWith('w') ? 0 : 1;
+      const sb = b.endsWith('w') ? 0 : 1;
+      return sa - sb;
+    });
+
+    for (let k = 0; k < keys.length; k++) {
+      const key = keys[k];
+      const value = movesObj[key];
+      const moveNo = parseInt(key, 10) || '';
+      const side = key.endsWith('w') ? 'w' : (key.endsWith('b') ? 'b' : '');
+      const san = Array.isArray(value) ? (value[0] || '') : value || '';
+      const clk = Array.isArray(value) ? (value[1] || '') : '';
+      rows.push([gameId, moveNo, side, key, san, clk]);
+    }
+  }
+
+  if (rows.length > 0) {
+    movesSheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
+  }
 }
 
 /**
