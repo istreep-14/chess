@@ -16,6 +16,7 @@
 const CHESS_COM_USERNAME = 'ians141'; // Replace with your Chess.com username
 const SHEET_ID = '1OAQz_2Ev2lYMoiNiDQnXhicOKHtSu7xqZK2PEudqN2I'; // Replace with your Google Sheet ID
 const SHEET_NAME = 'Sheet1'; // Name of the sheet tab
+const MOVES_SHEET_NAME = 'Moves'; // Name of the moves detail sheet
 
 /**
  * Main function to fetch all Chess.com games with complete data
@@ -58,6 +59,7 @@ function fetchAllChessComGames() {
     // Write all games data to sheet
     if (allGamesData.length > 0) {
       writeGamesToSheet(sheet, allGamesData);
+      writeMovesToSheet(allGamesData);
     }
     
     console.log(`Successfully fetched ${totalGames} games with complete data!`);
@@ -720,6 +722,61 @@ function writeGamesToSheet(sheet, gamesData) {
   range.setValues(rows);
   
   // No formatting
+}
+
+/**
+ * Write expanded moves (SAN + clock) to a dedicated sheet as rows
+ */
+function writeMovesToSheet(gamesData) {
+  const spreadsheet = SpreadsheetApp.openById(SHEET_ID);
+  let movesSheet = spreadsheet.getSheetByName(MOVES_SHEET_NAME);
+  if (!movesSheet) {
+    movesSheet = spreadsheet.insertSheet(MOVES_SHEET_NAME);
+  } else {
+    movesSheet.clear();
+  }
+
+  const headers = ['Game ID', 'Move No', 'Side', 'Key', 'SAN', 'Clock'];
+  movesSheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+
+  const rows = [];
+  for (let i = 0; i < gamesData.length; i++) {
+    const game = gamesData[i];
+    const gameId = game.gameId || '';
+    let movesObj = {};
+    try {
+      movesObj = game.movesSummary ? JSON.parse(game.movesSummary) : {};
+    } catch (e) {
+      movesObj = {};
+    }
+
+    const keys = Object.keys(movesObj);
+    if (keys.length === 0) continue;
+
+    // Sort keys by move number then side (w before b)
+    keys.sort((a, b) => {
+      const na = parseInt(a, 10);
+      const nb = parseInt(b, 10);
+      if (na !== nb) return na - nb;
+      const sa = a.endsWith('w') ? 0 : 1;
+      const sb = b.endsWith('w') ? 0 : 1;
+      return sa - sb;
+    });
+
+    for (let k = 0; k < keys.length; k++) {
+      const key = keys[k];
+      const value = movesObj[key];
+      const moveNo = parseInt(key, 10) || '';
+      const side = key.endsWith('w') ? 'w' : (key.endsWith('b') ? 'b' : '');
+      const san = Array.isArray(value) ? (value[0] || '') : value || '';
+      const clk = Array.isArray(value) ? (value[1] || '') : '';
+      rows.push([gameId, moveNo, side, key, san, clk]);
+    }
+  }
+
+  if (rows.length > 0) {
+    movesSheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
+  }
 }
 
 /**
