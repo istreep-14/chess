@@ -17,6 +17,8 @@ const CHESS_COM_USERNAME = 'ians141'; // Replace with your Chess.com username
 const SHEET_ID = '1OAQz_2Ev2lYMoiNiDQnXhicOKHtSu7xqZK2PEudqN2I'; // Replace with your Google Sheet ID
 const SHEET_NAME = 'Sheet1'; // Name of the sheet tab
 const MOVES_SHEET_NAME = 'Moves'; // Name of the moves detail sheet
+const MOVES_SAN_SHEET_NAME = 'Moves SAN';
+const MOVES_CLOCK_SHEET_NAME = 'Moves Clock';
 
 /**
  * Main function to fetch all Chess.com games with complete data
@@ -59,7 +61,7 @@ function fetchAllChessComGames() {
     // Write all games data to sheet
     if (allGamesData.length > 0) {
       writeGamesToSheet(sheet, allGamesData);
-      writeMovesToSheet(allGamesData);
+      writeMovesMatrixSheets(allGamesData);
     }
     
     console.log(`Successfully fetched ${totalGames} games with complete data!`);
@@ -725,58 +727,81 @@ function writeGamesToSheet(sheet, gamesData) {
 }
 
 /**
- * Write expanded moves (SAN + clock) to a dedicated sheet as rows
+ * Write matrices for moves: one sheet for SAN, one for clocks
+ * Each game is a row; columns are 1w, 1b, 2w, 2b, ... up to the maximum move number across all games
  */
-function writeMovesToSheet(gamesData) {
+function writeMovesMatrixSheets(gamesData) {
   const spreadsheet = SpreadsheetApp.openById(SHEET_ID);
-  let movesSheet = spreadsheet.getSheetByName(MOVES_SHEET_NAME);
-  if (!movesSheet) {
-    movesSheet = spreadsheet.insertSheet(MOVES_SHEET_NAME);
-  } else {
-    movesSheet.clear();
-  }
+  let sanSheet = spreadsheet.getSheetByName(MOVES_SAN_SHEET_NAME);
+  if (!sanSheet) sanSheet = spreadsheet.insertSheet(MOVES_SAN_SHEET_NAME);
+  else sanSheet.clear();
+  let clkSheet = spreadsheet.getSheetByName(MOVES_CLOCK_SHEET_NAME);
+  if (!clkSheet) clkSheet = spreadsheet.insertSheet(MOVES_CLOCK_SHEET_NAME);
+  else clkSheet.clear();
 
-  const headers = ['Game ID', 'Move No', 'Side', 'Key', 'SAN', 'Clock'];
-  movesSheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-
-  const rows = [];
+  // Determine maximum move number across all games
+  let maxMoveNo = 0;
+  const parsedMovesByGame = [];
   for (let i = 0; i < gamesData.length; i++) {
-    const game = gamesData[i];
-    const gameId = game.gameId || '';
     let movesObj = {};
     try {
-      movesObj = game.movesSummary ? JSON.parse(game.movesSummary) : {};
+      movesObj = gamesData[i].movesSummary ? JSON.parse(gamesData[i].movesSummary) : {};
     } catch (e) {
       movesObj = {};
     }
-
-    const keys = Object.keys(movesObj);
-    if (keys.length === 0) continue;
-
-    // Sort keys by move number then side (w before b)
-    keys.sort((a, b) => {
-      const na = parseInt(a, 10);
-      const nb = parseInt(b, 10);
-      if (na !== nb) return na - nb;
-      const sa = a.endsWith('w') ? 0 : 1;
-      const sb = b.endsWith('w') ? 0 : 1;
-      return sa - sb;
-    });
-
-    for (let k = 0; k < keys.length; k++) {
-      const key = keys[k];
-      const value = movesObj[key];
-      const moveNo = parseInt(key, 10) || '';
-      const side = key.endsWith('w') ? 'w' : (key.endsWith('b') ? 'b' : '');
-      const san = Array.isArray(value) ? (value[0] || '') : value || '';
-      const clk = Array.isArray(value) ? (value[1] || '') : '';
-      rows.push([gameId, moveNo, side, key, san, clk]);
+    parsedMovesByGame.push(movesObj);
+    for (const key in movesObj) {
+      if (!Object.prototype.hasOwnProperty.call(movesObj, key)) continue;
+      const n = parseInt(key, 10);
+      if (!isNaN(n) && n > maxMoveNo) maxMoveNo = n;
     }
   }
 
-  if (rows.length > 0) {
-    movesSheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
+  // Build headers
+  const headers = ['Game ID'];
+  for (let n = 1; n <= maxMoveNo; n++) {
+    headers.push(`${n}w`, `${n}b`);
   }
+  sanSheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  clkSheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+
+  // Build rows
+  const sanRows = [];
+  const clkRows = [];
+  for (let i = 0; i < gamesData.length; i++) {
+    const game = gamesData[i];
+    const movesObj = parsedMovesByGame[i] || {};
+    const sanRow = new Array(headers.length).fill('');
+    const clkRow = new Array(headers.length).fill('');
+    sanRow[0] = game.gameId || '';
+    clkRow[0] = game.gameId || '';
+    for (let n = 1; n <= maxMoveNo; n++) {
+      const wKey = `${n}w`;
+      const bKey = `${n}b`;
+      const wVal = movesObj[wKey];
+      const bVal = movesObj[bKey];
+      // Column index: 1-based for headers; position in array is same as headers index
+      const wColIdx = (n - 1) * 2 + 1; // after Game ID
+      const bColIdx = (n - 1) * 2 + 2;
+      if (Array.isArray(wVal)) {
+        sanRow[wColIdx] = wVal[0] || '';
+        clkRow[wColIdx] = wVal[1] || '';
+      } else if (typeof wVal === 'string') {
+        sanRow[wColIdx] = wVal;
+      }
+      if (Array.isArray(bVal)) {
+        sanRow[bColIdx] = bVal[0] || '';
+        clkRow[bColIdx] = bVal[1] || '';
+      } else if (typeof bVal === 'string') {
+        sanRow[bColIdx] = bVal;
+      }
+    }
+    sanRows.push(sanRow);
+    clkRows.push(clkRow);
+  }
+
+  if (sanRows.length > 0) sanSheet.getRange(2, 1, sanRows.length, headers.length).setValues(sanRows);
+  if (clkRows.length > 0) clkSheet.getRange(2, 1, clkRows.length, headers.length).setValues(clkRows);
 }
 
 /**
