@@ -465,7 +465,7 @@ function parsePgnComponents(pgn) {
     const movesMap = {};
 
     // Match full move pairs like: 12. e4 {[%clk 0:03:00]} e5 {[%clk 0:02:59.9]}
-    const pairRegex = /(\d+)\.\s*(?!\.\.\.)([^\s{}]+)(?:\s*\{([^}]*)\})?(?:\s+([^\s{}]+)(?:\s*\{([^}]*)\})?)?/g;
+    const pairRegex = /(\d+)\.\s*(?!\.\.\.)([^\s{}]+)(?:\s*\{([^}]*)\})?(?:\s+(?:(?:\d+)?\.{3}\s*)?([^\s{}]+)(?:\s*\{([^}]*)\})?)?/g;
     let m;
     while ((m = pairRegex.exec(movesText)) !== null) {
       const moveNo = m[1];
