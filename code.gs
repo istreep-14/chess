@@ -62,6 +62,7 @@ function fetchAllChessComGames() {
     if (allGamesData.length > 0) {
       writeGamesToSheet(sheet, allGamesData);
       writeMovesMatrixSheets(allGamesData);
+      annotateRatingChangeForAll(allGamesData); // Annotate for full rebuild
     }
     
     console.log(`Successfully fetched ${totalGames} games with complete data!`);
@@ -628,7 +629,7 @@ function setupHeaders(sheet) {
     'My Result', 'My Result Code', 'Opponent Result Code',
     
     // My Information
-    'My Color', 'My Username', 'My Rating', 'My Player ID', 'My UUID',
+    'My Color', 'My Username', 'My Rating', 'Rating Change', 'My Player ID', 'My UUID',
     
     // Opponent Information  
     'Opponent Color', 'Opponent Username', 'Opponent Rating', 'Opponent Player ID', 'Opponent UUID',
@@ -792,7 +793,7 @@ function buildGameRowValues(game) {
     game.myResult, game.myResultCode, game.opponentResultCode,
     
     // My Information
-    game.myColor, game.myUsername, game.myRating, game.myPlayerId, game.myUuid,
+    game.myColor, game.myUsername, game.myRating, game.ratingChange !== undefined ? game.ratingChange : '', game.myPlayerId, game.myUuid,
     
     // Opponent Information
     game.opponentColor, game.opponentUsername, game.opponentRating, 
@@ -827,6 +828,98 @@ function buildGameRowValues(game) {
     // Complete Game Data
     game.pgnHeaders, game.fullPgn, game.rawGameData
   ];
+}
+
+/**
+ * Compute rating change for a full dataset (rebuild): per format, based on endTime order
+ */
+function annotateRatingChangeForAll(gamesData) {
+  const formatToIndices = {};
+  for (let i = 0; i < gamesData.length; i++) {
+    const f = gamesData[i].format || '';
+    if (!formatToIndices[f]) formatToIndices[f] = [];
+    formatToIndices[f].push(i);
+  }
+  for (const f in formatToIndices) {
+    const idxs = formatToIndices[f].slice();
+    idxs.sort((a, b) => {
+      const ta = gamesData[a].endTime instanceof Date ? gamesData[a].endTime.getTime() : 0;
+      const tb = gamesData[b].endTime instanceof Date ? gamesData[b].endTime.getTime() : 0;
+      return ta - tb; // oldest -> newest
+    });
+    let last = null;
+    for (let k = 0; k < idxs.length; k++) {
+      const i = idxs[k];
+      const r = Number(gamesData[i].myRating);
+      if (Number.isFinite(r) && Number.isFinite(last)) {
+        gamesData[i].ratingChange = r - last;
+      } else {
+        gamesData[i].ratingChange = '';
+      }
+      if (Number.isFinite(r)) last = r;
+    }
+  }
+}
+
+/**
+ * For incremental add: compute rating change of new records using existing sheet history by format
+ */
+function annotateRatingChangeForNew(sheet, newGameRecords) {
+  if (newGameRecords.length === 0) return;
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  if (lastRow < 2 || lastCol === 0) {
+    // No existing data; treat like first entries
+    newGameRecords.forEach(rec => rec.ratingChange = '');
+    return;
+  }
+  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  const formatCol = headers.indexOf('Format') + 1;
+  const endTimeCol = headers.indexOf('End Time') + 1;
+  const myRatingCol = headers.indexOf('My Rating') + 1;
+  if (!formatCol || !endTimeCol || !myRatingCol) {
+    newGameRecords.forEach(rec => rec.ratingChange = '');
+    return;
+  }
+  const existing = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+  const byFormat = {};
+  for (let i = 0; i < existing.length; i++) {
+    const f = existing[i][formatCol - 1];
+    const t = existing[i][endTimeCol - 1];
+    const r = Number(existing[i][myRatingCol - 1]);
+    if (!byFormat[f]) byFormat[f] = [];
+    const timeMs = t instanceof Date ? t.getTime() : 0;
+    byFormat[f].push({ t: timeMs, r: Number.isFinite(r) ? r : null });
+  }
+  for (const f in byFormat) {
+    byFormat[f].sort((a, b) => a.t - b.t); // oldest -> newest
+  }
+  // Process new records in ascending end time so prior ratings flow naturally
+  const recsAsc = newGameRecords.slice().sort((a, b) => {
+    const ta = a.endTime instanceof Date ? a.endTime.getTime() : 0;
+    const tb = b.endTime instanceof Date ? b.endTime.getTime() : 0;
+    return ta - tb;
+  });
+  const lastRating = {}; // format -> number|null
+  const ptr = {}; // format -> index into byFormat[f]
+  for (let i = 0; i < recsAsc.length; i++) {
+    const rec = recsAsc[i];
+    const f = rec.format || '';
+    const t = rec.endTime instanceof Date ? rec.endTime.getTime() : 0;
+    if (!ptr.hasOwnProperty(f)) ptr[f] = 0;
+    const list = byFormat[f] || [];
+    while (ptr[f] < list.length && list[ptr[f]].t < t) {
+      if (Number.isFinite(list[ptr[f]].r)) lastRating[f] = list[ptr[f]].r;
+      ptr[f]++;
+    }
+    const r = Number(rec.myRating);
+    if (Number.isFinite(r) && Number.isFinite(lastRating[f])) {
+      rec.ratingChange = r - lastRating[f];
+    } else {
+      rec.ratingChange = '';
+    }
+    if (Number.isFinite(r)) lastRating[f] = r;
+  }
 }
 
 /**
@@ -889,6 +982,7 @@ function addNewGames() {
   const rows = newGameRecords.map(buildGameRowValues);
   sheet.insertRows(2, rows.length);
   sheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
+  annotateRatingChangeForNew(sheet, newGameRecords); // Annotate for incremental add
 
   // Update moves matrices incrementally
   prependMovesMatrixRows(newGameRecords);
