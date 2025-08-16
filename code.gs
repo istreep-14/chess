@@ -236,6 +236,12 @@ function processCompleteGameData(game) {
     pgnEcoCode: pgnComponents.ecoCode,
     pgnOpening: pgnComponents.opening,
     pgnVariation: pgnComponents.variation,
+    pgnUtcDate: pgnComponents.utcDate,
+    pgnUtcTime: pgnComponents.utcTime,
+    pgnWhiteTitle: pgnComponents.whiteTitle,
+    pgnBlackTitle: pgnComponents.blackTitle,
+    pgnWhiteTeam: pgnComponents.whiteTeam,
+    pgnBlackTeam: pgnComponents.blackTeam,
     movesSummary: pgnComponents.moves,
     
     // PGN Data
@@ -417,6 +423,12 @@ function parsePgnComponents(pgn) {
     ecoCode: '',
     opening: '',
     variation: '',
+    utcDate: '',
+    utcTime: '',
+    whiteTitle: '',
+    blackTitle: '',
+    whiteTeam: '',
+    blackTeam: '',
     moves: ''
   };
 
@@ -452,6 +464,12 @@ function parsePgnComponents(pgn) {
   result.ecoCode = headers['eco'] || '';
   result.opening = headers['opening'] || '';
   result.variation = headers['variation'] || '';
+  result.utcDate = headers['utcdate'] || '';
+  result.utcTime = headers['utctime'] || '';
+  result.whiteTitle = headers['whitetitle'] || '';
+  result.blackTitle = headers['blacktitle'] || '';
+  result.whiteTeam = headers['whiteteam'] || '';
+  result.blackTeam = headers['blackteam'] || '';
 
   // Extract moves section and build keyed map for moves with clocks
   const blankLineIndex = pgn.indexOf('\n\n');
@@ -661,10 +679,10 @@ function setupHeaders(sheet) {
     'PGN Event', 'PGN Site', 'PGN Date', 'PGN Round', 'PGN White', 'PGN Black', 'PGN Result',
     'PGN White Elo', 'PGN Black Elo', 'PGN Time Control', 'PGN Termination', 'PGN Start Time',
     'PGN End Time', 'PGN Link', 'PGN Current Position', 'PGN Timezone', 'PGN ECO Code',
-    'PGN Opening', 'PGN Variation', 'Moves Summary',
+    'PGN Opening', 'PGN Variation', 'PGN UTC Date', 'PGN UTC Time', 'PGN White Title', 'PGN Black Title', 'PGN White Team', 'PGN Black Team', 'Moves Summary',
     
     // Complete Game Data
-    'PGN Other Headers', 'Full PGN', 'Raw Game Data'
+    'Full PGN', 'Raw Game Data'
   ];
   
   sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
@@ -828,10 +846,10 @@ function buildGameRowValues(game) {
     game.pgnBlack, game.pgnResult, game.pgnWhiteElo, game.pgnBlackElo, 
     game.pgnTimeControl, game.pgnTermination, game.pgnStartTime, game.pgnEndTime, 
     game.pgnLink, game.pgnCurrentPosition, game.pgnTimezone, game.pgnEcoCode, 
-    game.pgnOpening, game.pgnVariation, game.movesSummary,
+    game.pgnOpening, game.pgnVariation, game.pgnUtcDate, game.pgnUtcTime, game.pgnWhiteTitle, game.pgnBlackTitle, game.pgnWhiteTeam, game.pgnBlackTeam, game.movesSummary,
     
     // Complete Game Data
-    game.pgnHeaders, game.fullPgn, game.rawGameData
+    game.fullPgn, game.rawGameData
   ];
 }
 
