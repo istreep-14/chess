@@ -19,6 +19,12 @@ const SHEET_NAME = 'Games'; // Name of the sheet tab
 const MOVES_SHEET_NAME = 'Moves'; // Name of the moves detail sheet
 const MOVES_SAN_SHEET_NAME = 'Moves SAN';
 const MOVES_CLOCK_SHEET_NAME = 'Moves Clock';
+// Optional limits to reduce runtime (0 means unlimited)
+const MAX_GAMES_PER_RUN = 0; // For full rebuild: process at most this many newest games
+const MAX_NEW_GAMES_PER_RUN = 0; // For incremental add: insert at most this many newest new games
+// Optional date range filter (YYYY-MM-DD). Matches by game end date. Leave empty for no bound
+const START_DATE = ''; // e.g. '2024-01-01'
+const END_DATE = '';   // e.g. '2024-12-31'
 
 /**
  * Main function to fetch all Chess.com games with complete data
@@ -67,14 +73,17 @@ function fetchAllChessComGames() {
       if (Number.isFinite(ai) && Number.isFinite(bi)) return bi - ai;
       return 0;
     });
+    // Apply date range filter by end date and limit number of games
+    const filtered = allGamesData.filter(g => isWithinDateRange(g.endTime));
+    const limited = (MAX_GAMES_PER_RUN && MAX_GAMES_PER_RUN > 0) ? filtered.slice(0, MAX_GAMES_PER_RUN) : filtered;
     
     // Write all games data to sheet
-    if (allGamesData.length > 0) {
-      annotateRatingChangeForAll(allGamesData); // Annotate before writing
-      writeGamesToSheet(sheet, allGamesData);
-      writeMovesMatrixSheets(allGamesData);
-      writeDailySummaryFromArray(allGamesData);
-      writeOpponentSummaryFromArray(allGamesData);
+    if (limited.length > 0) {
+      annotateRatingChangeForAll(limited); // Annotate before writing
+      writeGamesToSheet(sheet, limited);
+      writeMovesMatrixSheets(limited);
+      writeDailySummaryFromArray(limited);
+      writeOpponentSummaryFromArray(limited);
     }
     
     console.log(`Successfully fetched ${totalGames} games with complete data!`);
@@ -980,6 +989,12 @@ function addNewGames() {
 
   for (let i = 0; i < reversed.length; i++) {
     const url = reversed[i];
+    // Early stop if archive month is outside the configured date range
+    if (!isArchiveWithinRange(url)) {
+      // If archive is older than start bound, we can break; if newer than end bound, continue
+      if (isArchiveOlderThanStart(url)) break;
+      if (isArchiveNewerThanEnd(url)) continue;
+    }
     const response = UrlFetchApp.fetch(url);
     const data = JSON.parse(response.getContentText());
     const games = (data && data.games) ? data.games.slice() : [];
@@ -988,6 +1003,9 @@ function addNewGames() {
     let newInThisArchive = 0;
     for (let g = 0; g < games.length; g++) {
       const game = games[g];
+      // Filter by end date
+      const endDate = game.end_time ? new Date(game.end_time * 1000) : null;
+      if (!isWithinDateRange(endDate)) continue;
       const id = extractGameId(game.url);
       if (!id || existingIds.has(String(id))) {
         continue;
@@ -996,9 +1014,12 @@ function addNewGames() {
       newGameRecords.push(record);
       existingIds.add(String(id));
       newInThisArchive++;
+      if (MAX_NEW_GAMES_PER_RUN && MAX_NEW_GAMES_PER_RUN > 0 && newGameRecords.length >= MAX_NEW_GAMES_PER_RUN) {
+        break;
+      }
     }
     // If no new games found in this recent archive, assume older ones are already imported
-    if (newInThisArchive === 0) {
+    if (newInThisArchive === 0 || (MAX_NEW_GAMES_PER_RUN && MAX_NEW_GAMES_PER_RUN > 0 && newGameRecords.length >= MAX_NEW_GAMES_PER_RUN)) {
       break;
     }
     // Consider a brief delay to reduce rate limiting
@@ -1408,4 +1429,42 @@ function fetchChessComProfileSafe(username) {
   } catch (e) {
     return null;
   }
+}
+
+function isWithinDateRange(dateVal) {
+  if (!(dateVal instanceof Date)) return true;
+  const tz = Session.getScriptTimeZone();
+  const dStr = Utilities.formatDate(dateVal, tz, 'yyyy-MM-dd');
+  if (START_DATE && dStr < START_DATE) return false;
+  if (END_DATE && dStr > END_DATE) return false;
+  return true;
+}
+
+function parseArchiveYearMonth(archiveUrl) {
+  // Example: https://api.chess.com/pub/player/user/games/2024/08
+  const m = String(archiveUrl).match(/\/games\/(\d{4})\/(\d{2})/);
+  if (!m) return null;
+  return `${m[1]}-${m[2]}`; // yyyy-MM
+}
+
+function isArchiveWithinRange(archiveUrl) {
+  const ym = parseArchiveYearMonth(archiveUrl);
+  if (!ym) return true;
+  const startYm = START_DATE ? START_DATE.slice(0,7) : '';
+  const endYm = END_DATE ? END_DATE.slice(0,7) : '';
+  if (startYm && ym < startYm) return false;
+  if (endYm && ym > endYm) return false;
+  return true;
+}
+
+function isArchiveOlderThanStart(archiveUrl) {
+  const ym = parseArchiveYearMonth(archiveUrl);
+  const startYm = START_DATE ? START_DATE.slice(0,7) : '';
+  return !!(startYm && ym && ym < startYm);
+}
+
+function isArchiveNewerThanEnd(archiveUrl) {
+  const ym = parseArchiveYearMonth(archiveUrl);
+  const endYm = END_DATE ? END_DATE.slice(0,7) : '';
+  return !!(endYm && ym && ym > endYm);
 }
