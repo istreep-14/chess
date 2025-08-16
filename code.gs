@@ -146,6 +146,11 @@ function processCompleteGameData(game) {
   
   // Extract detailed PGN components
   const pgnComponents = parsePgnComponents(game.pgn);
+  const gameLengthMinutes = computeGameLengthMinutes({
+    format: determineFormat(game),
+    pgnStartTime: pgnComponents.startTime,
+    pgnEndTime: pgnComponents.endTime
+  });
   
   return {
     // Basic Game Information
@@ -195,8 +200,7 @@ function processCompleteGameData(game) {
     // Game Analysis
     finalFen: game.fen || '',
     moveCount: countMoves(game.pgn),
-    gameDuration: calculateGameDuration(game),
-    averageMoveTime: calculateAverageMoveTime(game),
+    gameLengthMinutes: gameLengthMinutes,
     
     // Tournament/Match Information
     tournamentUrl: game.tournament || '',
@@ -642,7 +646,7 @@ function setupHeaders(sheet) {
     'ECO Code', 'ECO URL', 'Opening Name', 'Variation',
     
     // Game Analysis
-    'Final FEN', 'Move Count',
+    'Final FEN', 'Move Count', 'Game Length (min)',
     
     // Time Control Details
     'Base Time', 'Increment', 'Time Control Category',
@@ -807,7 +811,7 @@ function buildGameRowValues(game) {
     game.ecoCode, game.ecoUrl, game.openingName, game.variation,
     
     // Game Analysis
-    game.finalFen, game.moveCount,
+    game.finalFen, game.moveCount, game.gameLengthMinutes,
     
     // Time Control Details
     game.baseTime, game.increment, game.timeControlCategory,
@@ -843,10 +847,14 @@ function annotateRatingChangeForAll(gamesData) {
   }
   for (const f in formatToIndices) {
     const idxs = formatToIndices[f].slice();
+    // Sort by numeric Game ID ascending; fallback to endTime
     idxs.sort((a, b) => {
+      const ai = Number(gamesData[a].gameId);
+      const bi = Number(gamesData[b].gameId);
+      if (Number.isFinite(ai) && Number.isFinite(bi) && ai !== bi) return ai - bi;
       const ta = gamesData[a].endTime instanceof Date ? gamesData[a].endTime.getTime() : 0;
       const tb = gamesData[b].endTime instanceof Date ? gamesData[b].endTime.getTime() : 0;
-      return ta - tb; // oldest -> newest
+      return ta - tb;
     });
     let last = null;
     for (let k = 0; k < idxs.length; k++) {
@@ -870,15 +878,14 @@ function annotateRatingChangeForNew(sheet, newGameRecords) {
   const lastRow = sheet.getLastRow();
   const lastCol = sheet.getLastColumn();
   if (lastRow < 2 || lastCol === 0) {
-    // No existing data; treat like first entries
     newGameRecords.forEach(rec => rec.ratingChange = '');
     return;
   }
   const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
   const formatCol = headers.indexOf('Format') + 1;
-  const endTimeCol = headers.indexOf('End Time') + 1;
+  const idCol = headers.indexOf('Game ID') + 1;
   const myRatingCol = headers.indexOf('My Rating') + 1;
-  if (!formatCol || !endTimeCol || !myRatingCol) {
+  if (!formatCol || !idCol || !myRatingCol) {
     newGameRecords.forEach(rec => rec.ratingChange = '');
     return;
   }
@@ -886,40 +893,35 @@ function annotateRatingChangeForNew(sheet, newGameRecords) {
   const byFormat = {};
   for (let i = 0; i < existing.length; i++) {
     const f = existing[i][formatCol - 1];
-    const t = existing[i][endTimeCol - 1];
+    const idStr = existing[i][idCol - 1];
+    const id = Number(idStr);
     const r = Number(existing[i][myRatingCol - 1]);
     if (!byFormat[f]) byFormat[f] = [];
-    const timeMs = t instanceof Date ? t.getTime() : 0;
-    byFormat[f].push({ t: timeMs, r: Number.isFinite(r) ? r : null });
+    byFormat[f].push({ id: Number.isFinite(id)? id:null, r: Number.isFinite(r)? r:null });
   }
   for (const f in byFormat) {
-    byFormat[f].sort((a, b) => a.t - b.t); // oldest -> newest
+    byFormat[f].sort((a, b) => (a.id||0) - (b.id||0));
   }
-  // Process new records in ascending end time so prior ratings flow naturally
-  const recsAsc = newGameRecords.slice().sort((a, b) => {
-    const ta = a.endTime instanceof Date ? a.endTime.getTime() : 0;
-    const tb = b.endTime instanceof Date ? b.endTime.getTime() : 0;
-    return ta - tb;
-  });
-  const lastRating = {}; // format -> number|null
-  const ptr = {}; // format -> index into byFormat[f]
-  for (let i = 0; i < recsAsc.length; i++) {
-    const rec = recsAsc[i];
+  for (let i = 0; i < newGameRecords.length; i++) {
+    const rec = newGameRecords[i];
     const f = rec.format || '';
-    const t = rec.endTime instanceof Date ? rec.endTime.getTime() : 0;
-    if (!ptr.hasOwnProperty(f)) ptr[f] = 0;
-    const list = byFormat[f] || [];
-    while (ptr[f] < list.length && list[ptr[f]].t < t) {
-      if (Number.isFinite(list[ptr[f]].r)) lastRating[f] = list[ptr[f]].r;
-      ptr[f]++;
-    }
+    const id = Number(rec.gameId);
     const r = Number(rec.myRating);
-    if (Number.isFinite(r) && Number.isFinite(lastRating[f])) {
-      rec.ratingChange = r - lastRating[f];
+    const list = byFormat[f] || [];
+    // find largest id < current id
+    let prev = null;
+    for (let j = list.length - 1; j >= 0; j--) {
+      if (Number.isFinite(list[j].id) && list[j].id < id) { prev = list[j]; break; }
+    }
+    if (prev && Number.isFinite(r) && Number.isFinite(prev.r)) {
+      rec.ratingChange = r - prev.r;
     } else {
       rec.ratingChange = '';
     }
-    if (Number.isFinite(r)) lastRating[f] = r;
+    // push current for subsequent new records
+    list.push({ id: Number.isFinite(id)? id:null, r: Number.isFinite(r)? r:null });
+    list.sort((a,b)=> (a.id||0)-(b.id||0));
+    byFormat[f] = list;
   }
 }
 
