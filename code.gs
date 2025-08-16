@@ -209,7 +209,7 @@ function processCompleteGameData(game) {
     myAccuracy: game.accuracies && game.accuracies[isWhite ? 'white' : 'black'] ? 
                 (game.accuracies[isWhite ? 'white' : 'black'] * 100).toFixed(1) + '%' : '',
     opponentAccuracy: game.accuracies && game.accuracies[isWhite ? 'black' : 'white'] ? 
-                      (game.accuracies[isWhite ? 'black' : 'white'] * 100).toFixed(1) + '%' : '',
+                      (game.accuracies[isWhite ? 'black' : 'white'] * 100).toFixed(1) + '%',
     
     // Opening Information
     ecoCode: openingInfo.eco || '',
