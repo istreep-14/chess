@@ -16,7 +16,7 @@
 // Configuration - UPDATE THESE VALUES
 const CHESS_COM_USERNAME = 'ians141'; // Replace with your Chess.com username
 const SHEET_ID = '1OAQz_2Ev2lYMoiNiDQnXhicOKHtSu7xqZK2PEudqN2I'; // Replace with your Google Sheet ID
-const SHEET_NAME = 'Sheet1'; // Name of the sheet tab
+const SHEET_NAME = 'Games'; // Name of the sheet tab
 const MOVES_SHEET_NAME = 'Moves'; // Name of the moves detail sheet
 const MOVES_SAN_SHEET_NAME = 'Moves SAN';
 const MOVES_CLOCK_SHEET_NAME = 'Moves Clock';
@@ -258,7 +258,7 @@ function processCompleteGameData(game) {
  */
 function extractGameId(url) {
   if (!url) return null;
-  const match = url.match(/\/game\/(\d+)/);
+  const match = url.match(/\/game\/(?:live|daily)\/(\d+)/i) || url.match(/\/game\/(\d+)/);
   return match ? match[1] : null;
 }
 
@@ -641,7 +641,7 @@ function setupHeaders(sheet) {
     'ECO Code', 'ECO URL', 'Opening Name', 'Variation',
     
     // Game Analysis
-    'Final FEN', 'Move Count', 'Game Duration', 'Average Move Time',
+    'Final FEN', 'Move Count',
     
     // Time Control Details
     'Base Time', 'Increment', 'Time Control Category',
@@ -674,51 +674,7 @@ function writeGamesToSheet(sheet, gamesData) {
   if (gamesData.length === 0) return;
   
   // Convert games data to 2D array for sheet
-  const rows = gamesData.map(game => [
-    // Basic Game Information
-    game.gameUrl, game.gameId, game.startTime, game.endTime, game.timeControl, 
-    game.timeClass, game.format, game.rules, game.rated, game.gameType, game.isLiveGame, 
-    game.isDailyGame, game.isVariant,
-    
-    // Results
-    game.myResult, game.myResultCode, game.opponentResultCode,
-    
-    // My Information
-    game.myColor, game.myUsername, game.myRating, game.myPlayerId, game.myUuid,
-    
-    // Opponent Information
-    game.opponentColor, game.opponentUsername, game.opponentRating, 
-    game.opponentPlayerId, game.opponentUuid,
-    
-    // Accuracy
-    game.myAccuracy, game.opponentAccuracy,
-    
-    // Opening Information
-    game.ecoCode, game.ecoUrl, game.openingName, game.variation,
-    
-    // Game Analysis
-    game.finalFen, game.moveCount, game.gameDuration, game.averageMoveTime,
-    
-    // Time Control Details
-    game.baseTime, game.increment, game.timeControlCategory,
-    
-    // Tournament/Match
-    game.tournamentUrl, game.tournamentName, game.matchUrl, game.matchName,
-    
-    // Current Game Status
-    game.currentTurn, game.isMyTurn, game.moveBy, game.drawOffer, 
-    game.hasDrawOffer, game.lastActivity,
-    
-    // PGN Component Headers
-    game.pgnEvent, game.pgnSite, game.pgnDate, game.pgnRound, game.pgnWhite, 
-    game.pgnBlack, game.pgnResult, game.pgnWhiteElo, game.pgnBlackElo, 
-    game.pgnTimeControl, game.pgnTermination, game.pgnStartTime, game.pgnEndTime, 
-    game.pgnLink, game.pgnCurrentPosition, game.pgnTimezone, game.pgnEcoCode, 
-    game.pgnOpening, game.pgnVariation, game.movesSummary,
-    
-    // Complete Game Data
-    game.pgnHeaders, game.fullPgn, game.rawGameData
-  ]);
+  const rows = gamesData.map(buildGameRowValues);
   
   // Write data starting from row 2 (after headers)
   const range = sheet.getRange(2, 1, rows.length, rows[0].length);
@@ -819,5 +775,210 @@ function onOpen() {
   const ui = SpreadsheetApp.getUi();
   ui.createMenu('Chess.com Complete Import')
     .addItem('Fetch All Games (Complete Data)', 'fetchAllChessComGames')
+    .addItem('Add New Games (Incremental)', 'addNewGames')
     .addToUi();
+}
+
+/**
+ * Build a single row array for the Games sheet from a processed game record
+ */
+function buildGameRowValues(game) {
+  return [
+    // Basic Game Information
+    game.gameUrl, game.gameId, game.startTime, game.endTime, game.timeControl, 
+    game.timeClass, game.format, game.rules, game.rated, game.gameType, game.isLiveGame, 
+    game.isDailyGame, game.isVariant,
+    
+    // Results
+    game.myResult, game.myResultCode, game.opponentResultCode,
+    
+    // My Information
+    game.myColor, game.myUsername, game.myRating, game.myPlayerId, game.myUuid,
+    
+    // Opponent Information
+    game.opponentColor, game.opponentUsername, game.opponentRating, 
+    game.opponentPlayerId, game.opponentUuid,
+    
+    // Accuracy
+    game.myAccuracy, game.opponentAccuracy,
+    
+    // Opening Information
+    game.ecoCode, game.ecoUrl, game.openingName, game.variation,
+    
+    // Game Analysis
+    game.finalFen, game.moveCount,
+    
+    // Time Control Details
+    game.baseTime, game.increment, game.timeControlCategory,
+    
+    // Tournament/Match
+    game.tournamentUrl, game.tournamentName, game.matchUrl, game.matchName,
+    
+    // Current Game Status
+    game.currentTurn, game.isMyTurn, game.moveBy, game.drawOffer, 
+    game.hasDrawOffer, game.lastActivity,
+    
+    // PGN Component Headers
+    game.pgnEvent, game.pgnSite, game.pgnDate, game.pgnRound, game.pgnWhite, 
+    game.pgnBlack, game.pgnResult, game.pgnWhiteElo, game.pgnBlackElo, 
+    game.pgnTimeControl, game.pgnTermination, game.pgnStartTime, game.pgnEndTime, 
+    game.pgnLink, game.pgnCurrentPosition, game.pgnTimezone, game.pgnEcoCode, 
+    game.pgnOpening, game.pgnVariation, game.movesSummary,
+    
+    // Complete Game Data
+    game.pgnHeaders, game.fullPgn, game.rawGameData
+  ];
+}
+
+/**
+ * Incrementally add new games only; insert at top of sheets
+ */
+function addNewGames() {
+  const sheet = getOrCreateSheet();
+  const existingIds = new Set();
+  const lastRow = sheet.getLastRow();
+  if (lastRow >= 2) {
+    // Find Game ID column by header name
+    const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    const idColIndex = headers.indexOf('Game ID') + 1; // 1-based
+    if (idColIndex > 0) {
+      const idValues = sheet.getRange(2, idColIndex, lastRow - 1, 1).getValues();
+      for (let i = 0; i < idValues.length; i++) {
+        const val = idValues[i][0];
+        if (val) existingIds.add(String(val));
+      }
+    }
+  }
+
+  const archives = getGameArchives();
+  const reversed = archives.slice().reverse(); // newest first
+  const newGameRecords = [];
+
+  for (let i = 0; i < reversed.length; i++) {
+    const url = reversed[i];
+    const response = UrlFetchApp.fetch(url);
+    const data = JSON.parse(response.getContentText());
+    const games = (data && data.games) ? data.games.slice() : [];
+    // newest first by end_time
+    games.sort((a, b) => (b.end_time || 0) - (a.end_time || 0));
+    let newInThisArchive = 0;
+    for (let g = 0; g < games.length; g++) {
+      const game = games[g];
+      const id = extractGameId(game.url);
+      if (!id || existingIds.has(String(id))) {
+        continue;
+      }
+      const record = processCompleteGameData(game);
+      newGameRecords.push(record);
+      existingIds.add(String(id));
+      newInThisArchive++;
+    }
+    // If no new games found in this recent archive, assume older ones are already imported
+    if (newInThisArchive === 0) {
+      break;
+    }
+    // Consider a brief delay to reduce rate limiting
+    Utilities.sleep(200);
+  }
+
+  if (newGameRecords.length === 0) {
+    console.log('No new games to add.');
+    return;
+  }
+
+  // Insert into Games sheet at top (row 2)
+  const rows = newGameRecords.map(buildGameRowValues);
+  sheet.insertRows(2, rows.length);
+  sheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
+
+  // Update moves matrices incrementally
+  prependMovesMatrixRows(newGameRecords);
+}
+
+/**
+ * Prepend new rows to Moves SAN and Moves Clock sheets; extend columns if needed
+ */
+function prependMovesMatrixRows(newGameRecords) {
+  const spreadsheet = SpreadsheetApp.openById(SHEET_ID);
+  let sanSheet = spreadsheet.getSheetByName(MOVES_SAN_SHEET_NAME);
+  if (!sanSheet) sanSheet = spreadsheet.insertSheet(MOVES_SAN_SHEET_NAME);
+  let clkSheet = spreadsheet.getSheetByName(MOVES_CLOCK_SHEET_NAME);
+  if (!clkSheet) clkSheet = spreadsheet.insertSheet(MOVES_CLOCK_SHEET_NAME);
+
+  // Ensure headers exist
+  if (sanSheet.getLastRow() === 0) {
+    sanSheet.getRange(1, 1, 1, 1).setValues([['Game ID']]);
+  }
+  if (clkSheet.getLastRow() === 0) {
+    clkSheet.getRange(1, 1, 1, 1).setValues([['Game ID']]);
+  }
+
+  const sanHeaders = sanSheet.getRange(1, 1, 1, sanSheet.getLastColumn() || 1).getValues()[0];
+  const clkHeaders = clkSheet.getRange(1, 1, 1, clkSheet.getLastColumn() || 1).getValues()[0];
+  const currentHeaderLen = Math.max(sanHeaders.length, clkHeaders.length);
+
+  // Determine maximum move number needed from new records
+  let neededMaxMoveNo = 0;
+  const parsedMoves = [];
+  for (let i = 0; i < newGameRecords.length; i++) {
+    let obj = {};
+    try {
+      obj = newGameRecords[i].movesSummary ? JSON.parse(newGameRecords[i].movesSummary) : {};
+    } catch (e) { obj = {}; }
+    parsedMoves.push(obj);
+    for (const k in obj) {
+      const n = parseInt(k, 10);
+      if (!isNaN(n) && n > neededMaxMoveNo) neededMaxMoveNo = n;
+    }
+  }
+
+  // Compute desired header length: 1 (Game ID) + neededMaxMoveNo * 2
+  const desiredHeaderLen = 1 + neededMaxMoveNo * 2;
+  if (desiredHeaderLen > currentHeaderLen) {
+    const newHeaders = ['Game ID'];
+    for (let n = 1; n <= neededMaxMoveNo; n++) {
+      newHeaders.push(`${n}w`, `${n}b`);
+    }
+    sanSheet.getRange(1, 1, 1, newHeaders.length).setValues([newHeaders]);
+    clkSheet.getRange(1, 1, 1, newHeaders.length).setValues([newHeaders]);
+  }
+
+  const finalHeaderLen = Math.max(
+    sanSheet.getLastColumn() || 1,
+    clkSheet.getLastColumn() || 1
+  );
+
+  // Build new rows
+  const sanRows = [];
+  const clkRows = [];
+  for (let i = 0; i < newGameRecords.length; i++) {
+    const rec = newGameRecords[i];
+    const movesObj = parsedMoves[i] || {};
+    const sanRow = new Array(finalHeaderLen).fill('');
+    const clkRow = new Array(finalHeaderLen).fill('');
+    sanRow[0] = rec.gameId || '';
+    clkRow[0] = rec.gameId || '';
+    for (const key in movesObj) {
+      const val = movesObj[key];
+      const n = parseInt(key, 10);
+      if (isNaN(n)) continue;
+      const isWhite = key.endsWith('w');
+      const colIdx = 1 + (n - 1) * 2 + (isWhite ? 0 : 1); // 0-based index
+      if (colIdx >= finalHeaderLen) continue;
+      if (Array.isArray(val)) {
+        sanRow[colIdx] = val[0] || '';
+        clkRow[colIdx] = val[1] || '';
+      } else if (typeof val === 'string') {
+        sanRow[colIdx] = val;
+      }
+    }
+    sanRows.push(sanRow);
+    clkRows.push(clkRow);
+  }
+
+  // Insert rows at top (after header)
+  sanSheet.insertRows(2, sanRows.length);
+  clkSheet.insertRows(2, clkRows.length);
+  sanSheet.getRange(2, 1, sanRows.length, sanRows[0].length).setValues(sanRows);
+  clkSheet.getRange(2, 1, clkRows.length, clkRows[0].length).setValues(clkRows);
 }
