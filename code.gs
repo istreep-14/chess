@@ -58,12 +58,23 @@ function fetchAllChessComGames() {
       }
     }
     
+    // Order newest -> oldest by endTime then Game ID
+    allGamesData.sort((a, b) => {
+      const ta = a.endTime instanceof Date ? a.endTime.getTime() : 0;
+      const tb = b.endTime instanceof Date ? b.endTime.getTime() : 0;
+      if (tb !== ta) return tb - ta;
+      const ai = Number(a.gameId); const bi = Number(b.gameId);
+      if (Number.isFinite(ai) && Number.isFinite(bi)) return bi - ai;
+      return 0;
+    });
+    
     // Write all games data to sheet
     if (allGamesData.length > 0) {
       annotateRatingChangeForAll(allGamesData); // Annotate before writing
       writeGamesToSheet(sheet, allGamesData);
       writeMovesMatrixSheets(allGamesData);
       writeDailySummaryFromArray(allGamesData);
+      writeOpponentSummaryFromArray(allGamesData);
     }
     
     console.log(`Successfully fetched ${totalGames} games with complete data!`);
@@ -998,18 +1009,19 @@ function addNewGames() {
     console.log('No new games to add.');
     return;
   }
- 
+  
   // Compute rating change for the new records using existing history, before writing
   annotateRatingChangeForNew(sheet, newGameRecords);
   // Insert into Games sheet at top (row 2)
   const rows = newGameRecords.map(buildGameRowValues);
   sheet.insertRows(2, rows.length);
   sheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
- 
+  
   // Update moves matrices incrementally
   prependMovesMatrixRows(newGameRecords);
-  // Rebuild daily summary from the updated sheet
+  // Rebuild daily summary and opponents from the updated sheet
   writeDailySummary();
+  writeOpponentSummary();
 }
 
 /**
@@ -1185,60 +1197,81 @@ function writeDailySummary() {
  */
 function buildDailySummaryRows(gamesArray) {
   const formats = ['Bullet','Blitz','Rapid'];
-  // Aggregate by date (yyyy-mm-dd)
+  // Aggregate by date (yyyy-MM-dd) and compute per-game seconds
   const byDay = {};
+  let minTime = null, maxTime = null;
   for (let i = 0; i < gamesArray.length; i++) {
     const g = gamesArray[i];
     const d = g.endTime instanceof Date ? g.endTime : null;
     if (!d) continue;
+    const timeMs = d.getTime();
+    if (minTime === null || timeMs < minTime) minTime = timeMs;
+    if (maxTime === null || timeMs > maxTime) maxTime = timeMs;
     const dayKey = Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM-dd');
     if (!byDay[dayKey]) byDay[dayKey] = [];
-    // compute length for live games
-    g._lengthMin = computeGameLengthMinutes({
-      format: g.format,
-      pgnStartTime: g.pgnStartTime || g.pgnStartTime, // consistent
-      pgnEndTime: g.pgnEndTime || g.pgnEndTime
-    });
-    byDay[dayKey].push(g);
+    const startStr = g.pgnStartTime;
+    const endStr = g.pgnEndTime;
+    let lenSec = 0;
+    if (formats.indexOf(g.format) !== -1 && startStr && endStr) {
+      const s = parseDailyClockToSeconds(startStr);
+      const e = parseDailyClockToSeconds(endStr);
+      if (s != null && e != null) {
+        lenSec = e - s; if (lenSec < 0) lenSec += 86400;
+      }
+    }
+    const clone = Object.assign({}, g);
+    clone._lengthSec = lenSec;
+    byDay[dayKey].push(clone);
   }
-  // Build rows newest day first
-  const days = Object.keys(byDay).sort().reverse();
+  // Build complete list of days newest -> oldest, carrying ratings forward
+  const outDays = [];
+  if (minTime !== null && maxTime !== null) {
+    const oneDayMs = 24*3600*1000;
+    // Start at max date, go down to min date
+    let cur = new Date(maxTime);
+    const minDate = new Date(minTime);
+    cur.setHours(0,0,0,0);
+    minDate.setHours(0,0,0,0);
+    while (cur.getTime() >= minDate.getTime()) {
+      const key = Utilities.formatDate(cur, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+      outDays.push(key);
+      cur = new Date(cur.getTime() - oneDayMs);
+    }
+  }
   const header = [
     'Date',
-    // Final Ratings
     'Bullet Rating', 'Blitz Rating', 'Rapid Rating',
-    // Totals across 3 formats
-    'Games', 'Wins', 'Losses', 'Draws', 'Win %', 'Score', 'Rating Sum', 'Rating Change', 'Total Time (min)',
-    // Per format metrics groups
+    'Games', 'Wins', 'Losses', 'Draws', 'Win %', 'Score', 'Rating Sum', 'Rating Change', 'Total Minutes', 'Total Seconds',
     'Bullet Games','Bullet W','Bullet L','Bullet D','Bullet Win %','Bullet Score','Bullet Time (min)',
     'Blitz Games','Blitz W','Blitz L','Blitz D','Blitz Win %','Blitz Score','Blitz Time (min)',
     'Rapid Games','Rapid W','Rapid L','Rapid D','Rapid Win %','Rapid Score','Rapid Time (min)'
   ];
   const out = [header];
-
+  // Carry-forward per-format last rating
+  const carried = { Bullet:null, Blitz:null, Rapid:null };
   let prevRatingSum = null;
-  for (let di = 0; di < days.length; di++) {
-    const day = days[di];
-    const items = byDay[day].slice().sort((a,b) => (a.endTime - b.endTime));
+  for (let di = 0; di < outDays.length; di++) {
+    const day = outDays[di];
+    const items = (byDay[day] || []).slice().sort((a,b) => (a.endTime - b.endTime));
     const perFmt = {};
-    formats.forEach(f => perFmt[f] = { lastRating: null, games:0, w:0, l:0, d:0, time:0 });
-    let totalGames = 0, totalW = 0, totalL = 0, totalD = 0, totalTime = 0;
+    formats.forEach(f => perFmt[f] = { lastRating: carried[f], games:0, w:0, l:0, d:0, timeMin:0, timeSec:0 });
+    let totalGames = 0, totalW = 0, totalL = 0, totalD = 0, totalSec = 0;
 
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
       if (formats.indexOf(it.format) === -1) continue;
       const f = it.format;
-      // last rating of the day for this format
       if (Number.isFinite(it.myRating)) perFmt[f].lastRating = it.myRating;
-      perFmt[f].games++;
-      totalGames++;
+      perFmt[f].games++; totalGames++;
       if (it.myResult === 'Win') { perFmt[f].w++; totalW++; }
       else if (it.myResult === 'Loss') { perFmt[f].l++; totalL++; }
       else { perFmt[f].d++; totalD++; }
-      totalTime += it._lengthMin || 0;
-      perFmt[f].time += it._lengthMin || 0;
+      totalSec += it._lengthSec || 0;
+      perFmt[f].timeSec += it._lengthSec || 0;
     }
-
+    // Update carried ratings
+    formats.forEach(f => { carried[f] = perFmt[f].lastRating; });
+    // Final ratings for the day are the per-format lastRatings (carried if no games)
     const bulletR = perFmt['Bullet'].lastRating;
     const blitzR = perFmt['Blitz'].lastRating;
     const rapidR = perFmt['Rapid'].lastRating;
@@ -1249,20 +1282,130 @@ function buildDailySummaryRows(gamesArray) {
     const winPct = totalGames ? ( (totalW + (totalD/2)) / totalGames ) : 0;
     const scoreStr = totalGames ? `${(totalW + totalD/2).toFixed(1)}/${totalGames}` : '';
 
+    // Per-format time in minutes
+    formats.forEach(f => { perFmt[f].timeMin = Math.round((perFmt[f].timeSec/60)*10)/10; });
+
+    const totalMinutes = Math.floor(totalSec / 60);
+    const totalSecondsRemainder = Math.round((totalSec - totalMinutes*60) * 10) / 10;
+
     const bullet = perFmt['Bullet'];
     const blitz = perFmt['Blitz'];
     const rapid = perFmt['Rapid'];
 
-    const fmtPart = (o)=> [o.games, o.w, o.l, o.d, o.games? ((o.w + o.d/2)/o.games):0, o.games? `${(o.w + o.d/2).toFixed(1)}/${o.games}`:'', Math.round(o.time*10)/10];
+    const fmtPart = (o)=> [o.games, o.w, o.l, o.d, o.games? ((o.w + o.d/2)/o.games):0, o.games? `${(o.w + o.d/2).toFixed(1)}/${o.games}`:'', o.timeMin];
 
     out.push([
       day,
       bulletR || '', blitzR || '', rapidR || '',
-      totalGames, totalW, totalL, totalD, winPct, scoreStr, ratingSum, ratingChange, Math.round(totalTime*10)/10,
+      totalGames, totalW, totalL, totalD, winPct, scoreStr, ratingSum, ratingChange, totalMinutes, totalSecondsRemainder,
       ...fmtPart(bullet),
       ...fmtPart(blitz),
       ...fmtPart(rapid)
     ]);
   }
   return out;
+}
+
+function writeOpponentSummaryFromArray(gamesData) {
+  const spreadsheet = SpreadsheetApp.openById(SHEET_ID);
+  const sheetName = 'Opponent Summary';
+  let oppSheet = spreadsheet.getSheetByName(sheetName);
+  if (!oppSheet) oppSheet = spreadsheet.insertSheet(sheetName);
+  oppSheet.clear();
+  const rows = buildOpponentSummaryRows(gamesData);
+  if (rows.length === 0) return;
+  oppSheet.getRange(1, 1, rows.length, rows[0].length).setValues(rows);
+}
+
+function writeOpponentSummary() {
+  const spreadsheet = SpreadsheetApp.openById(SHEET_ID);
+  const gamesSheet = getOrCreateSheet();
+  const lastRow = gamesSheet.getLastRow();
+  if (lastRow < 2) return;
+  const lastCol = gamesSheet.getLastColumn();
+  const headers = gamesSheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  const rows = gamesSheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+  const idx = {};
+  ['Opponent Username','Opponent Rating','My Result','Game ID','End Time','Format'].forEach(h => idx[h] = headers.indexOf(h));
+  const games = [];
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    games.push({
+      opponentUsername: r[idx['Opponent Username']],
+      opponentRating: r[idx['Opponent Rating']],
+      myResult: r[idx['My Result']],
+      gameId: r[idx['Game ID']],
+      endTime: r[idx['End Time']],
+      format: r[idx['Format']]
+    });
+  }
+  const dataRows = buildOpponentSummaryRows(games);
+  const sheetName = 'Opponent Summary';
+  let oppSheet = spreadsheet.getSheetByName(sheetName);
+  if (!oppSheet) oppSheet = spreadsheet.insertSheet(sheetName);
+  oppSheet.clear();
+  if (dataRows.length > 0) oppSheet.getRange(1, 1, dataRows.length, dataRows[0].length).setValues(dataRows);
+}
+
+function buildOpponentSummaryRows(games) {
+  // Aggregate per opponent username (case-insensitive key)
+  const map = {};
+  const keyFor = (u)=> (u || '').toLowerCase();
+  for (let i = 0; i < games.length; i++) {
+    const g = games[i];
+    const key = keyFor(g.opponentUsername);
+    if (!key) continue;
+    if (!map[key]) map[key] = { username: g.opponentUsername, games:0, w:0, l:0, d:0, ids:[], lastSeenRating:null };
+    map[key].games++;
+    if (g.myResult === 'Win') map[key].w++; else if (g.myResult === 'Loss') map[key].l++; else map[key].d++;
+    if (g.gameId) map[key].ids.push(String(g.gameId));
+    const r = Number(g.opponentRating);
+    if (Number.isFinite(r)) map[key].lastSeenRating = r; // last occurrence used
+  }
+  const opps = Object.values(map);
+  // Fetch profiles (best-effort)
+  for (let i = 0; i < opps.length; i++) {
+    const u = opps[i].username;
+    const prof = fetchChessComProfileSafe(u);
+    if (prof) {
+      opps[i].title = prof.title || '';
+      opps[i].name = prof.name || '';
+      opps[i].country = prof.country || '';
+      opps[i].status = prof.status || '';
+      opps[i].url = prof.url || '';
+      opps[i].joined = prof.joined || '';
+      opps[i].last_online = prof.last_online || '';
+    }
+    Utilities.sleep(80);
+  }
+  // Sort by games desc
+  opps.sort((a,b) => b.games - a.games);
+  const header = [
+    'Opponent Username','Name','Title','Country','Status','Profile URL','Joined','Last Online',
+    'Games','Wins','Losses','Draws','Win %','Score','Last Seen Rating','Game IDs'
+  ];
+  const out = [header];
+  for (let i = 0; i < opps.length; i++) {
+    const o = opps[i];
+    const winPct = o.games ? ( (o.w + o.d/2) / o.games ) : 0;
+    const scoreStr = o.games ? `${(o.w + o.d/2).toFixed(1)}/${o.games}` : '';
+    out.push([
+      o.username || '', o.name || '', o.title || '', o.country || '', o.status || '', o.url || '', 
+      o.joined || '', o.last_online || '',
+      o.games, o.w, o.l, o.d, winPct, scoreStr, o.lastSeenRating || '', o.ids.join(',')
+    ]);
+  }
+  return out;
+}
+
+function fetchChessComProfileSafe(username) {
+  try {
+    if (!username) return null;
+    const url = `https://api.chess.com/pub/player/${String(username).toLowerCase()}`;
+    const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    if (res.getResponseCode() !== 200) return null;
+    return JSON.parse(res.getContentText());
+  } catch (e) {
+    return null;
+  }
 }
